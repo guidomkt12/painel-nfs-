@@ -11,6 +11,7 @@ USERS=json.loads(os.environ.get("PANEL_USERS_JSON","{}"))
 TOKEN=os.environ.get("WEBHOOK_TOKEN","")
 UPLOAD_URL=os.environ.get("N8N_UPLOAD_URL","")
 UPLOAD_TOKEN=os.environ.get("N8N_UPLOAD_TOKEN","")
+UPLOAD_HEADER=os.environ.get("N8N_UPLOAD_HEADER","apikey").strip()
 ORIGIN=os.environ.get("PUBLIC_ORIGIN","").rstrip("/")
 if DEMO:
     UPLOAD_URL=UPLOAD_TOKEN=TOKEN=""
@@ -145,7 +146,7 @@ def dispatch():
                 with connect() as c: x=c.execute("SELECT * FROM outbox WHERE sent=0 AND next_attempt<=? ORDER BY next_attempt LIMIT 1",(time.time(),)).fetchone()
                 if x:
                     payload=json.dumps({"batch_id":x["id"],"filename":x["name"],"xlsx_base64":base64.b64encode(x["content"]).decode()}).encode()
-                    req=urllib.request.Request(UPLOAD_URL,data=payload,headers={"Authorization":"Bearer "+UPLOAD_TOKEN,"Content-Type":"application/json"},method="POST")
+                    req=urllib.request.Request(UPLOAD_URL,data=payload,headers={UPLOAD_HEADER:("Bearer "+UPLOAD_TOKEN if UPLOAD_HEADER.lower()=="authorization" else UPLOAD_TOKEN),"Content-Type":"application/json"},method="POST")
                     try:
                         with urllib.request.urlopen(req,timeout=45) as response:
                             if response.status not in (200,201,202): raise RuntimeError("Resposta não aceita")
@@ -240,7 +241,7 @@ class Handler(BaseHTTPRequestHandler):
 if __name__=="__main__":
     if DEMO:
         if not isinstance(USERS,dict) or not USERS or any(p!="123456" for p in USERS.values()): raise SystemExit("Configure PANEL_USERS_JSON com usuários de teste e senha 123456.")
-    elif not isinstance(USERS,dict) or not USERS or any(not isinstance(p,str) or len(p)<16 for p in USERS.values()) or len(TOKEN)<32 or not ORIGIN.startswith("https://") or (UPLOAD_URL and (not UPLOAD_URL.startswith("https://") or len(UPLOAD_TOKEN)<32)):
+    elif not isinstance(USERS,dict) or not USERS or any(not isinstance(p,str) or len(p)<16 for p in USERS.values()) or len(TOKEN)<32 or not ORIGIN.startswith("https://") or (not UPLOAD_URL.startswith("https://") or len(UPLOAD_TOKEN)<32 or UPLOAD_HEADER.lower() not in ("apikey","authorization","x-api-key")):
         raise SystemExit("Configure usuários individuais (senhas >=16), WEBHOOK_TOKEN >=32, PUBLIC_ORIGIN HTTPS e webhook de envio seguro.")
     init();threading.Thread(target=dispatch,daemon=True).start()
     ThreadingHTTPServer(("127.0.0.1" if DEMO else "0.0.0.0",int(os.environ.get("PORT","8080"))),Handler).serve_forever()
