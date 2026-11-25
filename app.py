@@ -39,6 +39,18 @@ class Pg:
             return self.raw.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
         return self.raw.execute(sql.replace("?", "%s"), args)
 
+def configuration_errors():
+    errors = []
+    if core.DEMO: errors.append("DEMO_MODE")
+    if not DATABASE: errors.append("DATABASE_URL")
+    if not isinstance(core.USERS, dict) or not core.USERS or any(not isinstance(v, str) or len(v) < 16 for v in core.USERS.values()): errors.append("PANEL_USERS_JSON")
+    if len(core.TOKEN) < 32: errors.append("WEBHOOK_TOKEN")
+    if not core.ORIGIN.startswith("https://"): errors.append("PUBLIC_ORIGIN")
+    if not core.UPLOAD_URL.startswith("https://"): errors.append("N8N_UPLOAD_URL")
+    if len(core.UPLOAD_TOKEN) < 32: errors.append("N8N_UPLOAD_TOKEN")
+    if core.UPLOAD_HEADER.lower() not in ("apikey","authorization","x-api-key"): errors.append("N8N_UPLOAD_HEADER")
+    return errors
+
 def ensure():
     global READY
     if READY:
@@ -46,8 +58,9 @@ def ensure():
     with INIT_LOCK:
         if READY:
             return
-        if core.DEMO or not DATABASE or not isinstance(core.USERS, dict) or not core.USERS or any(not isinstance(v, str) or len(v) < 16 for v in core.USERS.values()) or len(core.TOKEN) < 32 or not core.ORIGIN.startswith("https://") or not core.UPLOAD_URL.startswith("https://") or len(core.UPLOAD_TOKEN) < 32:
-            raise RuntimeError("Production configuration incomplete")
+        missing = configuration_errors()
+        if missing:
+            raise RuntimeError("Production configuration incomplete: " + ", ".join(missing))
         with Pg() as c:
             c.execute("BEGIN IMMEDIATE")
             for sql in [
@@ -76,12 +89,15 @@ def too_large(_):
 
 @app.before_request
 def authorize():
+    if request.path == "/health":
+        return None
+    if request.path in ("/app.js", "/style.css", "/keile.svg"):
+        return None
     try:
         ensure()
     except Exception:
-        return jsonify(error="Configuração ou banco de produção indisponível"), 503
-    if request.path == "/health":
-        return None
+        app.logger.error("Panel initialization failed; missing variables: %s", ", ".join(configuration_errors()) or "none; check database")
+        return jsonify(error="Configuração ou banco de produção indisponível", code="PANEL_NOT_READY"), 503
     if request.path == "/api/events":
         if not core.equal(request.headers.get("Authorization",""), "Bearer " + core.TOKEN):
             return jsonify(error="Não autorizado"), 401
@@ -94,9 +110,14 @@ def authorize():
 
 @app.get("/health")
 def health():
-    with Pg() as c:
-        c.execute("SELECT 1")
-    return jsonify(ok=True)
+    try:
+        ensure()
+        with Pg() as c:
+            c.execute("SELECT 1")
+        return jsonify(ok=True)
+    except Exception:
+        app.logger.error("Panel health check failed; missing variables: %s", ", ".join(configuration_errors()) or "none; check database")
+        return jsonify(ok=False, error="Serviço indisponível", code="PANEL_NOT_READY"), 503
 
 @app.get("/")
 def index():
