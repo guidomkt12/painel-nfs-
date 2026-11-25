@@ -87,6 +87,26 @@ def protect(response):
 def too_large(_):
     return jsonify(error="Arquivo excede o limite de 4 MiB"), 413
 
+def readiness_error(exc):
+    missing = configuration_errors()
+    if missing:
+        # Names only: never expose environment values, credentials or connection URLs.
+        app.logger.error("Missing or invalid production configuration: %s", ", ".join(missing))
+        return {"ok": False, "code": "CONFIG_INCOMPLETE", "error": "Variáveis ausentes ou inválidas: " + ", ".join(missing), "missing": missing}
+    state = getattr(exc, "sqlstate", None)
+    if state == "28P01" or state == "28000":
+        message = "PostgreSQL: autenticação recusada. Confira a credencial de DATABASE_URL."
+    elif state == "42501":
+        message = "PostgreSQL: permissões insuficientes para inicializar as tabelas do painel."
+    elif state == "3D000":
+        message = "PostgreSQL: banco inexistente. Confira DATABASE_URL."
+    elif isinstance(exc, psycopg.OperationalError):
+        message = "PostgreSQL: não foi possível conectar. Confira DATABASE_URL, rede e TLS."
+    else:
+        message = "PostgreSQL: falha na inicialização. Consulte os Runtime Logs da Vercel."
+    app.logger.error("Panel initialization failed: class=%s sqlstate=%s", type(exc).__name__, state or "unknown")
+    return {"ok": False, "code": "DATABASE_NOT_READY", "error": message}
+
 @app.before_request
 def authorize():
     if request.path == "/health":
@@ -95,9 +115,8 @@ def authorize():
         return None
     try:
         ensure()
-    except Exception:
-        app.logger.error("Panel initialization failed; missing variables: %s", ", ".join(configuration_errors()) or "none; check database")
-        return jsonify(error="Configuração ou banco de produção indisponível", code="PANEL_NOT_READY"), 503
+    except Exception as exc:
+        return jsonify(readiness_error(exc)), 503
     if request.path == "/api/events":
         if not core.equal(request.headers.get("Authorization",""), "Bearer " + core.TOKEN):
             return jsonify(error="Não autorizado"), 401
@@ -115,9 +134,8 @@ def health():
         with Pg() as c:
             c.execute("SELECT 1")
         return jsonify(ok=True)
-    except Exception:
-        app.logger.error("Panel health check failed; missing variables: %s", ", ".join(configuration_errors()) or "none; check database")
-        return jsonify(ok=False, error="Serviço indisponível", code="PANEL_NOT_READY"), 503
+    except Exception as exc:
+        return jsonify(readiness_error(exc)), 503
 
 @app.get("/")
 def index():
