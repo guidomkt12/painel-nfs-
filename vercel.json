@@ -1,11 +1,5 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "functions": {
-    "app.py": {
-      "maxDuration": 60,
-      "includeFiles": "public/**"
-    }
-  },
   "headers": [
     {
       "source": "/(.*)",
@@ -19,6 +13,16 @@
           "value": "no-referrer"
         }
       ]
+    },
+    {
+      "source": "/api/(.*)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-store, private"
+        }
+      ]
     }
-  ]
+  ],
+  "framework": "flask"
 }
