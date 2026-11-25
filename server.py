@@ -7,7 +7,10 @@ from urllib.parse import urlsplit
 ROOT=Path(__file__).parent
 DEMO=os.environ.get("DEMO_MODE")=="1"
 DB=str(Path(tempfile.mkdtemp(prefix="keile-demo-"))/"demo.sqlite3") if DEMO else os.environ.get("DB_PATH","/data/keile.sqlite3")
-USERS=json.loads(os.environ.get("PANEL_USERS_JSON","{}"))
+try:
+    USERS=json.loads(os.environ.get("PANEL_USERS_JSON","{}"))
+except (ValueError, TypeError):
+    USERS={}
 TOKEN=os.environ.get("WEBHOOK_TOKEN","")
 UPLOAD_URL=os.environ.get("N8N_UPLOAD_URL","")
 UPLOAD_TOKEN=os.environ.get("N8N_UPLOAD_TOKEN","")
