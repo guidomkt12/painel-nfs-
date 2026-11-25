@@ -11,6 +11,11 @@ try:
     USERS=json.loads(os.environ.get("PANEL_USERS_JSON","{}"))
 except (ValueError, TypeError):
     USERS={}
+
+# A production-only override lets Guilherme rotate his own password independently.
+guilherme_password = os.environ.get("PANEL_GUILHERME_PASSWORD", "")
+if not DEMO and isinstance(USERS, dict) and len(guilherme_password) >= 16:
+    USERS["guilherme.fonseca@liderban.com.br"] = guilherme_password
 TOKEN=os.environ.get("WEBHOOK_TOKEN","")
 UPLOAD_URL=os.environ.get("N8N_UPLOAD_URL","")
 UPLOAD_TOKEN=os.environ.get("N8N_UPLOAD_TOKEN","")
