@@ -3,6 +3,9 @@ const $=id=>document.getElementById(id), batches=new Map(), rows=new Map(), dom=
 const fmt=new Intl.NumberFormat('pt-BR',{style:'currency',currency:'BRL'}), money=n=>fmt.format(n/100);
 const key=r=>JSON.stringify([r.batch_id,r.id]), txt=x=>String(x??''), fold=x=>txt(x).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();
 let openKey=null, toastTimer, retryTimer, maxUploadBytes=10*1024*1024;
+let lastLiveSequence=-1;
+let refreshInFlight;
+let receivedBatchId;
 function el(tag,text,cls){const e=document.createElement(tag);if(text!==undefined)e.textContent=text;if(cls)e.className=cls;return e}
 function toast(t){$('toast').textContent=t;$('toast').classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').classList.remove('show'),3500)}
 function statusName(s){return txt(s).replaceAll('_',' ').toLowerCase().replace(/^./,x=>x.toUpperCase())}
@@ -11,15 +14,62 @@ function filters(r,includeStatus=true){const query=fold($('search').value);retur
 function makeRow(r){const tr=el('tr'), c=el('td'), check=el('input');check.type='checkbox';check.checked=r.reviewed;check.setAttribute('aria-label','Conferir '+r.fornecedor+' '+r.documento);check.addEventListener('change',()=>mark(key(r),check.checked,check));c.append(check);tr.append(c);const vendor=el('td');vendor.append(el('strong',r.fornecedor||'Fornecedor não informado'),el('small',r.documento||'Sem documento'));tr.append(vendor,el('td',r.operacao),el('td',r.vencimento||'—'),el('td',money(r.valor_centavos),'money'));const st=el('td');st.append(el('span',statusName(r.status),'status '+(/LOCALIZAD|IDENTIFICAD|CONFIRMAD/i.test(r.status)&&!/NAO|NÃO|SEM|REVISAR/i.test(r.status)?'good':/ERRO|DIVERG|NAO_LOCALIZ|NÃO LOCALIZ/i.test(r.status)?'bad':'')));tr.append(st);const action=el('td'),b=el('button','Detalhes ›');b.onclick=()=>show(key(r));action.append(b);tr.append(action);if(r.reviewed)tr.classList.add('done');return tr}
 function renderRow(r,fresh=false){const k=key(r),old=dom.get(k);if(!filters(r)){old?.remove();dom.delete(k);return}const tr=makeRow(r);if(fresh)tr.classList.add('fresh');if(old)old.replaceWith(tr);else{const sorted=[...rows.values()].filter(x=>filters(x)&&key(x)!==k&&dom.has(key(x))).sort(compare);const next=sorted.find(x=>compare(r,x)<0);$('rows').insertBefore(tr,next?dom.get(key(next)):null)}dom.set(k,tr)}
 function compare(a,b){return a.fornecedor.localeCompare(b.fornecedor,'pt-BR')||a.documento.localeCompare(b.documento,'pt-BR')||key(a).localeCompare(key(b))}
-function renderMeta(){updateSelect('batch',[...batches.values()].map(b=>[b.id,b.name]),'Todos os arquivos');updateSelect('op',[...new Set([...rows.values()].map(r=>r.operacao))].sort().map(x=>[x,x]),'Todas as operações');const scope=[...rows.values()].filter(r=>filters(r,false));$('total').textContent=scope.length;$('pending').textContent=scope.filter(r=>!r.reviewed).length;$('reviewed').textContent=scope.filter(r=>r.reviewed).length;$('amount').textContent=money(scope.reduce((s,r)=>s+r.valor_centavos,0));$('newcount').textContent=dom.size+' cobranças';$('empty').hidden=dom.size>0;$('batchcount').textContent=batches.size+' lotes';const list=$('batches');list.replaceChildren();for(const b of [...batches.values()].sort((a,b)=>b.updated.localeCompare(a.updated))){const count=[...rows.values()].filter(r=>r.batch_id===b.id).length, item=el('div',undefined,'batch'), info=el('div'), bar=el('div',undefined,'bar'), progress=el('progress');info.append(el('strong',b.name),el('small',new Date(b.updated).toLocaleString('pt-BR')));bar.append(el('small',count+(b.total!==null&&b.total!==undefined?' / '+b.total:'')+' cobranças recebidas'));progress.max=b.total||Math.max(count,1);if(b.total!==null&&b.total!==undefined)progress.value=Math.min(count,b.total);bar.append(progress);const label=el('span',({queued:'Na fila',processing:'Processando',completed:'Concluído',failed:'Erro'})[b.status]||b.status,'pill');item.append(info,bar,label);if(b.error)info.append(el('small',b.error));list.append(item)}if(!batches.size)list.append(el('p','Nenhum arquivo recebido.'))}
+function renderMeta(){updateSelect('batch',[...batches.values()].map(b=>[b.id,b.name]),'Todos os arquivos');updateSelect('op',[...new Set([...rows.values()].map(r=>r.operacao))].sort().map(x=>[x,x]),'Todas as operações');const scope=[...rows.values()].filter(r=>filters(r,false));$('total').textContent=scope.length;$('pending').textContent=scope.filter(r=>!r.reviewed).length;$('reviewed').textContent=scope.filter(r=>r.reviewed).length;$('amount').textContent=money(scope.reduce((s,r)=>s+r.valor_centavos,0));$('newcount').textContent=dom.size+' cobranças';$('empty').hidden=dom.size>0;$('batchcount').textContent=batches.size+' lotes';const list=$('batches');list.replaceChildren();for(const b of [...batches.values()].sort((a,b)=>b.updated.localeCompare(a.updated))){const count=[...rows.values()].filter(r=>r.batch_id===b.id).length, item=el('div',undefined,'batch'), info=el('div'), bar=el('div',undefined,'bar'), progress=el('progress');info.append(el('strong',b.name),el('small',new Date(b.updated).toLocaleString('pt-BR')));if(b.status==='queued')info.append(el('small','O n8n verifica a fila a cada 15 minutos.'));bar.append(el('small',count+(b.total!==null&&b.total!==undefined?' / '+b.total:'')+' cobranças recebidas'));progress.max=b.total||Math.max(count,1);if(b.total!==null&&b.total!==undefined)progress.value=Math.min(count,b.total);bar.append(progress);const label=el('span',({queued:'Aguardando processamento',processing:'Processando',completed:'Concluído',failed:'Erro'})[b.status]||b.status,'pill');item.append(info,bar,label);if(b.error)info.append(el('small',b.error));list.append(item)}if(!batches.size)list.append(el('p','Nenhum arquivo recebido.'))}
 function full(){dom.clear();$('rows').replaceChildren();for(const r of [...rows.values()].sort(compare))renderRow(r);renderMeta()}
-function change(e){const p=e.payload;if(e.type.startsWith('batch.'))batches.set(p.id,{...batches.get(p.id),...p});else if(e.type==='row.upsert'){const k=key(p);rows.set(k,p);renderRow(p,true)}else if(e.type==='row.reviewed'){const k=key(p),r=rows.get(k);if(r&&r.revision===p.revision){Object.assign(r,p);renderRow(r)}}renderMeta();if(openKey&&rows.has(openKey)&&$('detail').open)show(openKey)}
-function snapshot(s){batches.clear();rows.clear();for(const b of s.batches)batches.set(b.id,b);for(const r of s.rows)rows.set(key(r),r);full()}
+function change(e){const p=e.payload;if(e.type.startsWith('batch.'))batches.set(p.id,{...batches.get(p.id),...p});else if(e.type==='row.upsert'){const k=key(p);rows.set(k,p);renderRow(p,true)}else if(e.type==='row.reviewed'){const k=key(p),r=rows.get(k);if(r&&r.revision===p.revision){Object.assign(r,p);renderRow(r)}}renderMeta();showReceivedBatch();if(openKey&&rows.has(openKey)&&$('detail').open)show(openKey)}
+function snapshot(s){
+  if(Number.isSafeInteger(s.seq)){
+    if(s.seq<lastLiveSequence)return;
+    lastLiveSequence=s.seq;
+  }
+  batches.clear();
+  rows.clear();
+  for(const b of s.batches)batches.set(b.id,b);
+  for(const r of s.rows)rows.set(key(r),r);
+  full();
+  showReceivedBatch();
+}
+function showReceivedBatch(){
+  if(!receivedBatchId||!batches.has(receivedBatchId))return;
+  $('batch').value=receivedBatchId;
+  $('op').value='';
+  $('status').value='all';
+  $('search').value='';
+  receivedBatchId=undefined;
+  full();
+}
+function refreshSnapshot(){
+  if(!refreshInFlight){
+    refreshInFlight=request('/api/snapshot').then(snapshot).finally(()=>{refreshInFlight=undefined});
+  }
+  return refreshInFlight;
+}
 async function request(url,opts={}){if(window.KEILE_DEMO)return window.KEILE_DEMO.request(url,opts);const r=await fetch(url,{...opts,credentials:'same-origin',headers:{Accept:'application/json',...(opts.headers||{})}});const type=r.headers.get('content-type')||'';if(!type.toLowerCase().includes('application/json'))throw Error('API indisponível (HTTP '+r.status+'). Verifique se o servidor do painel está publicado e a rota '+url+' está configurada.');let data;try{data=await r.json()}catch{throw Error('Resposta JSON inválida da API (HTTP '+r.status+').')}if(!r.ok||data?.error){const e=data?.error;const msg=typeof e==='string'?e:e?.message||e?.detail||e?.code||data?.message||'Falha de comunicação';throw Error((typeof msg==='string'?msg:JSON.stringify(msg))+' (HTTP '+r.status+') · '+url)}return data}
 async function mark(k,checked,button){const r=rows.get(k);if(!r)return;button.disabled=true;try{await request('/api/review',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({batch_id:r.batch_id,row_id:r.id,revision:r.revision,reviewed:checked})});toast(checked?'Conferência registrada':'Conferência reaberta')}catch(e){toast(e.message);if(button.type==='checkbox')button.checked=r.reviewed}finally{button.disabled=false}}
 function show(k){const r=rows.get(k);if(!r)return;openKey=k;$('dtitle').textContent=r.fornecedor;const d=$('dbody');d.replaceChildren();const dl=el('dl');for(const [a,b] of [['Documento',r.documento],['Operação',r.operacao],['CNPJ',r.cnpj],['Valor',money(r.valor_centavos)],['Vencimento',r.vencimento],['Nota(s)',r.nota],['Resultado',statusName(r.status)],['Conferido por',r.review_actor||'—']]){const div=el('div');div.append(el('dt',a),el('dd',b||'—'));dl.append(div)}d.append(dl,el('h2','Evidências'),el('pre',r.detalhe||'Nenhuma evidência adicional recebida.'));for(const l of r.links||[]){const a=el('a',l.label+' ↗');a.href=l.url;a.target='_blank';a.rel='noopener noreferrer';d.append(a)}$('reviewbtn').textContent=r.reviewed?'Reabrir conferência':'Marcar como conferida';$('reviewbtn').onclick=()=>mark(k,!r.reviewed,$('reviewbtn'));if(!$('detail').open)$('detail').showModal()}
 $('close').onclick=()=>$('detail').close();$('detail').addEventListener('close',()=>openKey=null);for(const id of ['search','batch','op','status'])$(id).addEventListener(id==='search'?'input':'change',full);
-$('upload').onclick=()=>$('file').click();$('file').onchange=async()=>{const f=$('file').files[0];if(!f)return;$('upload').disabled=true;$('uploadmsg').textContent='Enviando…';try{if(!/\.xlsx$/i.test(f.name)||f.size>maxUploadBytes)throw Error('Selecione um XLSX de até '+Math.floor(maxUploadBytes/1024/1024)+' MB');const r=await request('/api/upload',{method:'POST',headers:{'X-Filename':encodeURIComponent(f.name),'Content-Type':'application/octet-stream'},body:f});$('uploadmsg').textContent=r.duplicate?'Arquivo já recebido.':'Arquivo recebido na fila.'}catch(e){$('uploadmsg').textContent=e.message}finally{$('upload').disabled=false;$('file').value=''}};
+$('upload').onclick=()=>$('file').click();$('file').onchange=async()=>{const f=$('file').files[0];if(!f)return;$('upload').disabled=true;$('uploadmsg').textContent='Enviando…';try{if(!/\.xlsx$/i.test(f.name)||f.size>maxUploadBytes)throw Error('Selecione um XLSX de até '+Math.floor(maxUploadBytes/1024/1024)+' MB');const r=await request('/api/upload',{method:'POST',headers:{'X-Filename':encodeURIComponent(f.name),'Content-Type':'application/octet-stream'},body:f});receivedBatchId=r.id;
+$('uploadmsg').textContent=r.duplicate?'Arquivo já recebido. Confira o lote abaixo.':'Arquivo recebido. O n8n verifica a fila a cada 15 minutos.';
+showReceivedBatch();
+void refreshSnapshot().catch(()=>{})}catch(e){$('uploadmsg').textContent=e.message}finally{$('upload').disabled=false;$('file').value=''}};
 function connection(label,online){$('conn').textContent=label;$('conn').className='connection '+(online?'online':'offline')}
 function enableDemo(){ $('upload').textContent='▶ Simular DDA';$('uploadmsg').textContent='Demonstração — somente dados fictícios';$('upload').onclick=async()=>{try{await request('/api/demo',{method:'POST'});toast('Simulação iniciada: 3 cobranças fictícias')}catch(e){toast(e.message)}}; }
-async function start(){ clearTimeout(retryTimer);$('upload').disabled=true;full();try{if(window.KEILE_DEMO){await window.KEILE_DEMO.login();window.KEILE_DEMO.subscribe(snapshot,change);enableDemo();connection('Demonstração local',true);$('upload').disabled=false;return}const c=await request('/api/config');if(c.max_upload_bytes)maxUploadBytes=c.max_upload_bytes;if(c.demo)enableDemo();const stream=new EventSource('/api/live');stream.onopen=()=>connection('Ao vivo',true);stream.onerror=()=>connection('Reconectando…',false);for(const [event,handler] of [['snapshot',snapshot],['change',change]])stream.addEventListener(event,e=>{try{handler(JSON.parse(e.data))}catch{toast('Evento inválido recebido do servidor')}});$('upload').disabled=false;}catch(e){connection('API indisponível',false);$('uploadmsg').textContent=e.message;toast(e.message);retryTimer=setTimeout(start,5000)}}start();
+async function start(){ clearTimeout(retryTimer);$('upload').disabled=true;full();try{if(window.KEILE_DEMO){await window.KEILE_DEMO.login();window.KEILE_DEMO.subscribe(snapshot,change);enableDemo();connection('Demonstração local',true);$('upload').disabled=false;return}const c=await request('/api/config');if(c.max_upload_bytes)maxUploadBytes=c.max_upload_bytes;if(c.demo)enableDemo();const stream=new EventSource('/api/live');stream.onopen=()=>connection('Ao vivo',true);stream.onerror=()=>connection('Reconectando…',false);
+stream.addEventListener('snapshot',event=>{
+  try{snapshot(JSON.parse(event.data))}catch{toast('Atualização inválida recebida do servidor')}
+});
+stream.addEventListener('change',event=>{
+  try{
+    const seq=Number(event.lastEventId);
+    if(Number.isSafeInteger(seq)&&seq<=lastLiveSequence)return;
+    change(JSON.parse(event.data));
+    if(Number.isSafeInteger(seq))lastLiveSequence=seq;
+  }catch{toast('Evento inválido recebido do servidor')}
+});
+void refreshSnapshot().catch(()=>{});
+setInterval(()=>{
+  if(stream.readyState!==EventSource.OPEN||receivedBatchId||[...batches.values()].some(b=>b.status==='queued'||b.status==='processing')){
+    void refreshSnapshot().catch(()=>{});
+  }
+},12000);
+$('upload').disabled=false;}catch(e){connection('API indisponível',false);$('uploadmsg').textContent=e.message;toast(e.message);retryTimer=setTimeout(start,5000)}}start();
